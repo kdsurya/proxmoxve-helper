@@ -1,117 +1,676 @@
-# Panduan Lab Siswa Proxmox VE 9.x
+# Panduan Pemula: Lab Siswa dengan Proxmox VE 9.x
 
-Panduan ini menjelaskan penggunaan dua skrip:
+Panduan ini dibuat untuk pengguna yang **masih baru menggunakan Proxmox VE**, termasuk yang belum terbiasa dengan:
 
-- `setup-siswa-proxmox.sh` — membuat akun siswa, resource pool, dan ACL yang diperlukan agar setiap siswa dapat membuat serta mengelola container LXC miliknya sendiri.
-- `hapus-siswa-proxmox.sh` — membersihkan container, resource pool, akun siswa, file password, dan secara opsional custom role yang dibuat untuk lab.
+- antarmuka web Proxmox;
+- istilah seperti **Node, Storage, Resource Pool, CT, LXC, Bridge, ACL, Role**;
+- terminal Linux;
+- menjalankan skrip Bash;
+- membuat dan menghapus container melalui Proxmox.
 
-> **Perhatian:** Jalankan kedua skrip sebagai `root` pada host Proxmox VE.  
-> Skrip penghapusan dapat menghapus container beserta seluruh data di dalamnya secara permanen.
+Panduan menggunakan dua skrip:
+
+```text
+setup-siswa-proxmox.sh
+hapus-siswa-proxmox.sh
+```
+
+Fungsi keduanya:
+
+```text
+setup-siswa-proxmox.sh
+    ↓
+membuat akun siswa
+    ↓
+membuat pool masing-masing siswa
+    ↓
+memberikan hak akses yang diperlukan
+    ↓
+siswa dapat membuat LXC sendiri
+
+
+hapus-siswa-proxmox.sh
+    ↓
+menghapus LXC siswa
+    ↓
+menghapus pool siswa
+    ↓
+menghapus akun siswa
+    ↓
+mengembalikan lab menjadi bersih
+```
 
 ---
 
-## 1. Tujuan Konfigurasi
+# 1. Gambaran Sistem yang Akan Dibuat
 
-Konfigurasi ini dibuat agar:
+Misalnya terdapat 30 siswa.
 
-- setiap siswa memiliki akun Proxmox sendiri;
-- setiap siswa memiliki resource pool sendiri;
-- siswa dapat membuat LXC Container dari template yang disediakan administrator;
-- siswa hanya dapat mengelola container yang berada di pool miliknya;
-- siswa tidak dapat mengakses container siswa lain;
-- siswa dapat menggunakan storage `local-lvm`;
-- siswa dapat memilih bridge `vmbr0`;
-- siswa tidak diberi hak administrator terhadap host Proxmox.
+Skrip akan membuat:
+
+```text
+siswa01@pve
+siswa02@pve
+siswa03@pve
+...
+siswa30@pve
+```
+
+Masing-masing siswa mendapat Resource Pool sendiri:
+
+```text
+pool-siswa01
+pool-siswa02
+pool-siswa03
+...
+pool-siswa30
+```
+
+Contoh hasilnya:
+
+```text
+Proxmox VE
+│
+├── siswa01@pve
+│   └── pool-siswa01
+│       ├── CT 101
+│       └── CT 102
+│
+├── siswa02@pve
+│   └── pool-siswa02
+│       └── CT 103
+│
+└── siswa03@pve
+    └── pool-siswa03
+        └── CT 104
+```
+
+Tujuan utamanya adalah:
+
+```text
+siswa01
+hanya boleh mengakses
+pool-siswa01
+
+siswa02
+hanya boleh mengakses
+pool-siswa02
+```
+
+Dengan demikian siswa tidak dapat mengelola container milik siswa lain.
+
+---
+
+# 2. Istilah Dasar Proxmox yang Perlu Dipahami
+
+Sebelum mulai, kenali beberapa istilah berikut.
+
+## Node
+
+**Node** adalah komputer/server yang menjalankan Proxmox VE.
+
+Contoh nama node:
+
+```text
+pve1
+```
+
+Di tampilan web Proxmox biasanya terlihat pada sisi kiri:
+
+```text
+Datacenter
+└── pve1
+```
+
+---
+
+## CT / LXC Container
+
+CT adalah singkatan dari:
+
+```text
+Container
+```
+
+Proxmox menggunakan teknologi **LXC** untuk container Linux.
+
+Contohnya:
+
+```text
+CT 101
+CT 102
+CT 108
+```
+
+Container lebih ringan dibanding VM biasa.
+
+---
+
+## VM
+
+VM adalah Virtual Machine berbasis QEMU/KVM.
+
+Contohnya:
+
+```text
+VM 200
+VM 201
+```
+
+Panduan ini berfokus pada **LXC Container**, bukan VM.
+
+---
+
+## Storage
+
+Storage adalah tempat Proxmox menyimpan data.
+
+Pada instalasi Proxmox standar biasanya tersedia:
+
+```text
+local
+local-lvm
+```
+
+Dalam panduan ini:
+
+```text
+local
+```
+
+digunakan untuk menyimpan template LXC.
+
+Sedangkan:
+
+```text
+local-lvm
+```
+
+digunakan untuk menyimpan disk/root filesystem container siswa.
+
+---
+
+## Template
+
+Template adalah sistem operasi dasar yang dipakai untuk membuat LXC.
+
+Contoh:
+
+```text
+Debian
+Ubuntu
+Alpine
+```
+
+Siswa hanya boleh memilih template yang sudah disediakan administrator.
+
+---
+
+## Resource Pool
+
+Resource Pool adalah kelompok resource di Proxmox.
+
+Dalam lab ini setiap siswa mempunyai satu pool.
+
+Contoh:
+
+```text
+pool-siswa01
+```
+
+Semua container siswa01 harus dimasukkan ke pool tersebut.
+
+---
+
+## Bridge
+
+Bridge adalah interface jaringan virtual Proxmox.
+
+Dalam panduan ini digunakan:
+
+```text
+vmbr0
+```
+
+Container siswa akan terhubung ke jaringan melalui bridge ini.
+
+---
+
+## User
+
+User adalah akun untuk login ke Proxmox.
 
 Contoh:
 
 ```text
 siswa01@pve
-└── pool-siswa01
-    ├── CT 101
-    └── CT 102
+```
 
-siswa02@pve
-└── pool-siswa02
-    └── CT 103
+Bagian:
+
+```text
+@pve
+```
+
+menunjukkan bahwa akun menggunakan:
+
+```text
+Proxmox VE Authentication Server
 ```
 
 ---
 
-# 2. Persyaratan
+## Role
 
-Sebelum menjalankan skrip, pastikan:
+Role adalah kumpulan hak akses.
 
-- Proxmox VE 9.x sudah terpasang;
-- login sebagai `root`;
-- storage template tersedia, default: `local`;
-- storage container tersedia, default: `local-lvm`;
-- bridge jaringan tersedia, default: `vmbr0`;
-- template LXC yang akan digunakan siswa sudah diunduh oleh administrator.
+Contoh role yang digunakan:
 
-Cek versi Proxmox:
-
-```bash
-pveversion
+```text
+LabStudentCT
+LabTemplateRead
+LabCTStorage
+LabNodeView
+LabNetworkAudit
+LabNetworkUse
 ```
 
-Cek storage:
+---
+
+## ACL
+
+ACL adalah aturan yang menentukan:
+
+```text
+siapa
+boleh melakukan apa
+pada resource mana
+```
+
+Contohnya:
+
+```text
+siswa01@pve
+
+boleh mengelola
+
+/pool/pool-siswa01
+```
+
+tetapi tidak diberikan hak pada:
+
+```text
+/pool/pool-siswa02
+```
+
+---
+
+# 3. Mengenal Tampilan Web Proxmox
+
+Buka browser pada komputer administrator.
+
+Masukkan alamat:
+
+```text
+https://IP-PROXMOX:8006
+```
+
+Contoh:
+
+```text
+https://192.168.1.10:8006
+```
+
+Browser mungkin menampilkan peringatan sertifikat.
+
+Untuk lab lokal, pilih opsi untuk melanjutkan ke halaman Proxmox.
+
+Kemudian login.
+
+Biasanya:
+
+```text
+User name : root
+Password  : password root Proxmox
+Realm     : Linux PAM standard authentication
+```
+
+Jika menulis lengkap:
+
+```text
+root@pam
+```
+
+---
+
+# 4. Bagian Penting pada Web UI Proxmox
+
+Setelah login, pada sisi kiri akan terlihat struktur seperti:
+
+```text
+Datacenter
+└── pve1
+    ├── local
+    └── local-lvm
+```
+
+## Datacenter
+
+Klik:
+
+```text
+Datacenter
+```
+
+untuk mengatur:
+
+- Users;
+- Groups;
+- Permissions;
+- Pools;
+- HA;
+- SDN;
+- konfigurasi tingkat cluster.
+
+---
+
+## Node
+
+Klik:
+
+```text
+pve1
+```
+
+untuk melihat:
+
+- Summary;
+- Shell;
+- Network;
+- Disks;
+- System;
+- Updates.
+
+---
+
+## Shell
+
+Untuk membuka terminal langsung dari browser:
+
+1. Klik node, misalnya:
+
+```text
+pve1
+```
+
+2. Pilih:
+
+```text
+Shell
+```
+
+Terminal akan muncul di browser.
+
+Semua perintah pada panduan ini dapat dijalankan dari menu **Shell** tersebut.
+
+Jadi pengguna pemula **tidak wajib menggunakan SSH dari komputer lain**.
+
+---
+
+# 5. Persiapan Sebelum Menjalankan Skrip
+
+Pastikan:
+
+- Proxmox VE 9.x sudah berjalan;
+- Anda login sebagai `root@pam`;
+- storage `local` tersedia;
+- storage `local-lvm` tersedia;
+- bridge `vmbr0` tersedia;
+- minimal satu template LXC sudah tersedia.
+
+---
+
+# 6. Mengecek Storage Melalui Web UI
+
+Pada sisi kiri klik:
+
+```text
+Datacenter
+└── pve1
+```
+
+Biasanya akan terlihat:
+
+```text
+local (pve1)
+local-lvm (pve1)
+```
+
+Jika keduanya ada, konfigurasi default script kemungkinan dapat digunakan.
+
+---
+
+# 7. Mengecek Storage dari Terminal
+
+Buka:
+
+```text
+pve1
+→ Shell
+```
+
+Jalankan:
 
 ```bash
 pvesm status
 ```
 
-Cek bridge:
+Contoh:
 
-```bash
-ip -br link
+```text
+Name       Type     Status
+local      dir      active
+local-lvm  lvmthin  active
 ```
 
-Cek template LXC:
+Yang penting adalah:
 
-```bash
-pveam list local
+```text
+local
+local-lvm
 ```
 
-Jika belum ada template:
+berstatus aktif.
+
+---
+
+# 8. Mengecek Bridge vmbr0 dari Web UI
+
+Klik:
+
+```text
+pve1
+→ System
+→ Network
+```
+
+Cari:
+
+```text
+vmbr0
+```
+
+Jika ada, berarti bridge tersedia.
+
+---
+
+# 9. Mengecek Bridge dari Terminal
+
+Jalankan:
+
+```bash
+ip -br link show vmbr0
+```
+
+Contoh:
+
+```text
+vmbr0    UP
+```
+
+Jika `vmbr0` tidak ada, jangan jalankan setup dahulu sebelum konfigurasi network diperiksa.
+
+---
+
+# 10. Menyiapkan Template LXC dari Web UI
+
+Administrator harus menyediakan template terlebih dahulu.
+
+Klik:
+
+```text
+pve1
+→ local
+→ CT Templates
+```
+
+Kemudian klik:
+
+```text
+Templates
+```
+
+Akan muncul daftar template.
+
+Contoh:
+
+```text
+Debian
+Ubuntu
+Alpine
+```
+
+Pilih salah satu, kemudian klik:
+
+```text
+Download
+```
+
+Tunggu hingga proses selesai.
+
+---
+
+# 11. Menyiapkan Template dari Terminal
+
+Alternatif melalui terminal:
 
 ```bash
 pveam update
+```
+
+Lihat daftar:
+
+```bash
 pveam available
 ```
 
-Contoh mengunduh template:
+Cari Debian:
+
+```bash
+pveam available | grep debian
+```
+
+Kemudian download sesuai nama template yang tersedia.
+
+Contoh:
 
 ```bash
 pveam download local debian-13-standard_13.1-1_amd64.tar.zst
 ```
 
-Nama template dapat berubah sesuai repository Proxmox yang tersedia saat itu.
+Nama versi dapat berubah mengikuti repository Proxmox.
 
 ---
 
-# 3. File yang Digunakan
+# 12. Dua Skrip yang Digunakan
 
-Letakkan kedua skrip di:
+Letakkan file berikut pada:
 
 ```text
 /root/setup-siswa-proxmox.sh
 /root/hapus-siswa-proxmox.sh
 ```
 
-File password siswa akan dibuat otomatis di:
+---
+
+# 13. Cara Membuat File Skrip untuk Pemula
+
+Buka:
 
 ```text
-/root/password-siswa-proxmox.csv
+pve1
+→ Shell
 ```
 
-Permission file password dibuat terbatas untuk root.
+Kemudian:
+
+```bash
+nano /root/setup-siswa-proxmox.sh
+```
+
+Tempel isi skrip setup.
+
+Untuk menyimpan di Nano:
+
+```text
+Ctrl + O
+```
+
+tekan:
+
+```text
+Enter
+```
+
+kemudian keluar:
+
+```text
+Ctrl + X
+```
+
+Lakukan hal yang sama untuk script cleanup:
+
+```bash
+nano /root/hapus-siswa-proxmox.sh
+```
 
 ---
 
-# 4. Konfigurasi `setup-siswa-proxmox.sh`
+# 14. Memberikan Hak Eksekusi pada Skrip
 
-Bagian konfigurasi utama:
+Setelah kedua file dibuat:
+
+```bash
+chmod +x /root/setup-siswa-proxmox.sh
+```
+
+dan:
+
+```bash
+chmod +x /root/hapus-siswa-proxmox.sh
+```
+
+Cek:
+
+```bash
+ls -l /root/*siswa-proxmox.sh
+```
+
+---
+
+# 15. Konfigurasi Utama Script Setup
+
+Pada awal `setup-siswa-proxmox.sh` terdapat:
 
 ```bash
 JUMLAH_SISWA=30
@@ -133,29 +692,38 @@ Jika jumlah siswa 36:
 JUMLAH_SISWA=36
 ```
 
-Hasil akun:
+Jika hanya 10 siswa:
 
-```text
-siswa01@pve
-siswa02@pve
-...
-siswa36@pve
-```
-
-Hasil pool:
-
-```text
-pool-siswa01
-pool-siswa02
-...
-pool-siswa36
+```bash
+JUMLAH_SISWA=10
 ```
 
 ---
 
-# 5. Custom Role yang Dibuat
+# 16. Menjalankan Setup
 
-Skrip membuat role berikut:
+Jalankan:
+
+```bash
+/root/setup-siswa-proxmox.sh
+```
+
+Script akan otomatis:
+
+1. memeriksa command Proxmox;
+2. memeriksa storage;
+3. memeriksa bridge;
+4. membuat custom role;
+5. membuat user siswa;
+6. membuat Resource Pool;
+7. memasang ACL;
+8. membuat file password.
+
+---
+
+# 17. Custom Role yang Dibuat
+
+Skrip membuat:
 
 ```text
 LabStudentCT
@@ -166,9 +734,22 @@ LabNetworkAudit
 LabNetworkUse
 ```
 
-## `LabStudentCT`
+Fungsinya:
 
-Hak untuk mengelola container dalam pool milik siswa:
+| Role | Fungsi |
+|---|---|
+| `LabStudentCT` | membuat dan mengelola CT di pool sendiri |
+| `LabTemplateRead` | melihat template |
+| `LabCTStorage` | membuat rootfs/disk CT |
+| `LabNodeView` | melihat node |
+| `LabNetworkAudit` | melihat jaringan/bridge |
+| `LabNetworkUse` | memakai `vmbr0` |
+
+---
+
+# 18. Permission Penting yang Digunakan
+
+Untuk CT:
 
 ```text
 Pool.Audit
@@ -183,80 +764,76 @@ VM.Config.Disk
 VM.Config.Options
 ```
 
-`Pool.Audit` diperlukan agar nama resource pool muncul pada wizard **Create CT**.
-
-## `LabTemplateRead`
+Untuk template:
 
 ```text
 Datastore.Audit
 ```
 
-Digunakan agar siswa dapat melihat template yang tersedia di storage `local`.
-
-Siswa tidak diberikan hak upload template.
-
-## `LabCTStorage`
+Untuk storage:
 
 ```text
 Datastore.Audit
 Datastore.AllocateSpace
 ```
 
-Digunakan agar siswa dapat membuat root filesystem container pada `local-lvm`.
-
-## `LabNodeView`
+Untuk node:
 
 ```text
 Sys.Audit
 ```
 
-Digunakan agar node Proxmox dapat terlihat pada GUI.
-
-## `LabNetworkAudit`
+Untuk bridge:
 
 ```text
 SDN.Audit
-```
-
-Digunakan agar local network dapat terlihat pada wizard pembuatan container.
-
-## `LabNetworkUse`
-
-```text
 SDN.Use
 ```
 
-Digunakan agar siswa dapat memakai bridge `vmbr0`.
+---
+
+# 19. Kenapa Pool.Audit Penting?
+
+Tanpa:
+
+```text
+Pool.Audit
+```
+
+dropdown **Resource Pool** pada wizard `Create CT` dapat kosong.
+
+Akibatnya siswa tidak dapat memilih:
+
+```text
+pool-siswa01
+```
+
+dan pembuatan container dapat berakhir:
+
+```text
+Permission check failed (403)
+```
 
 ---
 
-# 6. ACL Siswa
+# 20. Kenapa SDN.Audit dan SDN.Use Penting?
 
-Contoh permission untuk `siswa01@pve`:
+Tanpa hak tersebut, pilihan bridge:
 
 ```text
-/nodes
-    Sys.Audit
+vmbr0
+```
 
-/pool/pool-siswa01
-    Pool.Audit
-    VM.Allocate
-    VM.Audit
-    VM.Console
-    VM.PowerMgmt
-    VM.Config.CPU
-    VM.Config.Memory
-    VM.Config.Network
-    VM.Config.Disk
-    VM.Config.Options
+dapat tidak muncul pada tab:
 
-/storage/local
-    Datastore.Audit
+```text
+Create CT
+→ Network
+```
 
-/storage/local-lvm
-    Datastore.Audit
-    Datastore.AllocateSpace
+Konfigurasi yang digunakan:
 
+```text
 /sdn/zones/localnetwork
     SDN.Audit
 
@@ -264,50 +841,57 @@ Contoh permission untuk `siswa01@pve`:
     SDN.Use
 ```
 
-Dengan konfigurasi ini, `siswa01` tidak memiliki akses ke:
+---
+
+# 21. Melihat Hasil Setup dari Web UI
+
+Setelah script selesai, refresh browser Proxmox.
+
+Kemudian klik:
 
 ```text
-/pool/pool-siswa02
-/pool/pool-siswa03
+Datacenter
+→ Permissions
+→ Users
+```
+
+Anda seharusnya melihat:
+
+```text
+siswa01@pve
+siswa02@pve
 ...
+siswa30@pve
 ```
 
 ---
 
-# 7. Menjalankan `setup-siswa-proxmox.sh`
+# 22. Melihat Resource Pool dari Web UI
 
-Beri permission executable:
+Klik:
 
-```bash
-chmod +x /root/setup-siswa-proxmox.sh
+```text
+Datacenter
+→ Permissions
+→ Pools
 ```
 
-Jalankan:
+atau menu pool yang tersedia pada versi Proxmox Anda.
 
-```bash
-/root/setup-siswa-proxmox.sh
+Akan terlihat:
+
+```text
+pool-siswa01
+pool-siswa02
+...
+pool-siswa30
 ```
-
-Skrip akan:
-
-1. memeriksa Proxmox;
-2. memeriksa storage;
-3. memeriksa bridge;
-4. membuat atau memperbarui custom role;
-5. membuat akun siswa;
-6. membuat resource pool masing-masing siswa;
-7. memberikan ACL pool;
-8. memberikan ACL template;
-9. memberikan ACL storage;
-10. memberikan ACL node;
-11. memberikan ACL network;
-12. menyimpan password akun baru ke file CSV.
 
 ---
 
-# 8. Melihat Password Siswa
+# 23. Melihat Password Siswa
 
-Setelah setup selesai:
+Di Shell:
 
 ```bash
 cat /root/password-siswa-proxmox.csv
@@ -317,37 +901,37 @@ Contoh:
 
 ```csv
 username,password,pool
-siswa01@pve,6e98bd45a83140aa,pool-siswa01
-siswa02@pve,776354ad25ac31e2,pool-siswa02
+siswa01@pve,112233aabbccdd44,pool-siswa01
+siswa02@pve,aabbcc1122334455,pool-siswa02
 ```
 
-Simpan file ini dengan aman.
+File ini bersifat sensitif.
 
-Cek permission:
+Jangan dibagikan seluruh isinya kepada semua siswa.
 
-```bash
-ls -l /root/password-siswa-proxmox.csv
-```
+Berikan masing-masing siswa hanya akun miliknya.
 
 ---
 
-# 9. Login Siswa
+# 24. Cara Login Sebagai Siswa
 
-Buka:
+Logout dari akun root.
+
+Buka halaman Proxmox:
 
 ```text
 https://IP-PROXMOX:8006
 ```
 
-Contoh:
+Login contoh:
 
 ```text
-Username : siswa01
-Password : password dari CSV
-Realm    : Proxmox VE authentication server
+User name : siswa01
+Password  : sesuai CSV
+Realm     : Proxmox VE authentication server
 ```
 
-Jika ditulis lengkap:
+Atau jika menggunakan format lengkap:
 
 ```text
 siswa01@pve
@@ -355,98 +939,272 @@ siswa01@pve
 
 ---
 
-# 10. Membuat Container sebagai Siswa
+# 25. Tampilan yang Diharapkan untuk Siswa
 
-Klik:
+Siswa tidak akan melihat seluruh resource seperti administrator.
+
+Hal ini normal.
+
+Siswa hanya melihat resource yang memang diberikan permission.
+
+Tujuannya agar:
+
+```text
+siswa01
+tidak melihat/mengelola
+CT milik siswa02
+```
+
+---
+
+# 26. Panduan Membuat LXC untuk Siswa
+
+Setelah login sebagai siswa klik tombol:
 
 ```text
 Create CT
 ```
 
-## General
+Biasanya berada di kanan atas antarmuka Proxmox.
+
+Wizard akan terdiri dari:
+
+```text
+General
+Template
+Disks
+CPU
+Memory
+Network
+DNS
+Confirm
+```
+
+---
+
+# 27. Tab General
 
 Contoh:
 
 ```text
-Node                 : pve1
-CT ID                : otomatis
-Hostname             : debian-siswa01
-Unprivileged         : aktif
-Resource Pool        : pool-siswa01
+Node:
+pve1
 ```
 
-Pastikan **Resource Pool** tidak kosong.
+CT ID biasanya sudah otomatis.
 
-Untuk `siswa01`, seharusnya hanya muncul:
+Contoh:
+
+```text
+CT ID:
+108
+```
+
+Hostname:
+
+```text
+debian-siswa01
+```
+
+Pastikan:
+
+```text
+Unprivileged container
+```
+
+aktif.
+
+Resource Pool harus dipilih:
 
 ```text
 pool-siswa01
 ```
 
-## Template
+Untuk siswa01 seharusnya tidak muncul pool siswa lain.
 
-Pilih template pada storage:
+Password adalah password root **di dalam container**, bukan password login Proxmox.
+
+Contoh:
+
+```text
+Password:
+PasswordContainer123!
+```
+
+---
+
+# 28. Tentang Nesting
+
+Pada halaman General dapat muncul:
+
+```text
+Nesting
+```
+
+Untuk praktik dasar, nesting tidak wajib.
+
+Jika tidak diperlukan, biarkan tidak dicentang.
+
+Nesting biasanya diperlukan jika container akan menjalankan teknologi tertentu yang membutuhkan namespace tambahan.
+
+---
+
+# 29. Tab Template
+
+Pilih storage:
 
 ```text
 local
 ```
 
-## Disks
+Kemudian pilih template yang disediakan guru.
+
+Contoh:
+
+```text
+debian-13-standard
+```
+
+---
+
+# 30. Tab Disks
 
 Pilih:
 
 ```text
-Storage : local-lvm
+Storage:
+local-lvm
+```
+
+Contoh ukuran:
+
+```text
+8 GB
+```
+
+Untuk praktikum ringan biasanya 8–16 GB sudah cukup, tergantung kebutuhan.
+
+---
+
+# 31. Tab CPU
+
+Contoh:
+
+```text
+Cores:
+1
+```
+
+atau:
+
+```text
+2
+```
+
+Jangan memberikan resource terlalu besar jika server digunakan banyak siswa.
+
+---
+
+# 32. Tab Memory
+
+Contoh:
+
+```text
+Memory:
+1024 MB
+
+Swap:
+512 MB
+```
+
+Untuk container sederhana, 512 MB sampai 2 GB biasanya cukup tergantung aplikasi.
+
+---
+
+# 33. Tab Network
+
+Pada:
+
+```text
+Name
+```
+
+biarkan:
+
+```text
+eth0
+```
+
+Pada:
+
+```text
+Bridge
+```
+
+pilih:
+
+```text
+vmbr0
+```
+
+Untuk IPv4, jika jaringan menyediakan DHCP:
+
+```text
+DHCP
+```
+
+dapat dipilih.
+
+Jika menggunakan IP statis, isi sesuai jaringan sekolah/lab.
+
+---
+
+# 34. Tab DNS
+
+Untuk pemula biasanya dapat menggunakan konfigurasi default.
+
+Jika perlu, isi DNS server sesuai jaringan.
+
+Contoh:
+
+```text
+8.8.8.8
+```
+
+atau DNS lokal sekolah.
+
+---
+
+# 35. Tab Confirm
+
+Ini adalah tahap penting.
+
+Periksa bahwa ada:
+
+```text
+pool      pool-siswa01
+```
+
+Kemudian:
+
+```text
+rootfs    local-lvm:...
+```
+
+Dan network mengandung:
+
+```text
+bridge=vmbr0
 ```
 
 Contoh:
 
 ```text
-Disk size : 8 GB
+net0:
+name=eth0,bridge=vmbr0,...
 ```
 
-## CPU
-
-Contoh:
-
-```text
-Cores : 1
-```
-
-## Memory
-
-Contoh:
-
-```text
-Memory : 1024 MB
-Swap   : 512 MB
-```
-
-## Network
-
-Pilih:
-
-```text
-Bridge : vmbr0
-```
-
-Contoh:
-
-```text
-IPv4 : DHCP
-```
-
-## Confirm
-
-Sebelum klik **Finish**, periksa bahwa ada:
-
-```text
-pool     pool-siswa01
-rootfs   local-lvm:8
-net0     name=eth0,bridge=vmbr0,...
-```
-
-Lalu klik:
+Jika semuanya benar, klik:
 
 ```text
 Finish
@@ -454,74 +1212,191 @@ Finish
 
 ---
 
-# 11. Memeriksa Permission Siswa
+# 36. Setelah Container Dibuat
+
+Container akan muncul pada panel kiri.
+
+Klik CT tersebut.
 
 Contoh:
+
+```text
+108 (debian-siswa01)
+```
+
+Menu yang sering digunakan:
+
+```text
+Summary
+Console
+Resources
+Network
+DNS
+Options
+```
+
+---
+
+# 37. Menyalakan Container
+
+Klik container, kemudian:
+
+```text
+Start
+```
+
+Tunggu beberapa detik.
+
+Status akan berubah menjadi:
+
+```text
+running
+```
+
+---
+
+# 38. Membuka Console Container
+
+Klik:
+
+```text
+Console
+```
+
+Login menggunakan user/password Linux yang sesuai dengan template/container.
+
+Untuk banyak template LXC, administrator menentukan password root pada wizard Create CT.
+
+---
+
+# 39. Mematikan Container
+
+Klik:
+
+```text
+Shutdown
+```
+
+atau:
+
+```text
+Stop
+```
+
+Perbedaan sederhananya:
+
+```text
+Shutdown
+```
+
+meminta sistem operasi di dalam container berhenti dengan normal.
+
+Sedangkan:
+
+```text
+Stop
+```
+
+lebih langsung.
+
+Gunakan `Shutdown` jika memungkinkan.
+
+---
+
+# 40. Mengecek Permission Siswa dari Terminal
+
+Sebagai root:
 
 ```bash
 pveum user permissions siswa01@pve
 ```
 
-Cek bagian pool:
+Hasil ideal kira-kira:
 
-```bash
-pveum user permissions siswa01@pve | grep -A15 pool-siswa01
-```
+```text
+/nodes
+    Sys.Audit
 
-Cek network:
+/pool/pool-siswa01
+    Pool.Audit
+    VM.Allocate
+    VM.Audit
+    VM.Config.CPU
+    VM.Config.Disk
+    VM.Config.Memory
+    VM.Config.Network
+    VM.Config.Options
+    VM.Console
+    VM.PowerMgmt
 
-```bash
-pveum user permissions siswa01@pve | grep -i sdn
-```
+/sdn/zones/localnetwork
+    SDN.Audit
 
-Cek ACL langsung:
+/sdn/zones/localnetwork/vmbr0
+    SDN.Use
 
-```bash
-pveum acl list | grep siswa01
+/storage/local
+    Datastore.Audit
+
+/storage/local-lvm
+    Datastore.AllocateSpace
+    Datastore.Audit
 ```
 
 ---
 
-# 12. Jika Resource Pool Tidak Muncul
+# 41. Jika Resource Pool Tidak Muncul
 
-Pastikan role `LabStudentCT` memiliki:
+Gejala:
 
 ```text
-Pool.Audit
+Create CT
+→ General
+→ Resource Pool
 ```
 
+dropdown kosong.
+
 Cek:
+
+```bash
+pveum user permissions siswa01@pve
+```
+
+Pastikan ada:
+
+```text
+/pool/pool-siswa01
+    Pool.Audit
+```
+
+Jika tidak ada, periksa role:
 
 ```bash
 pveum role list | grep LabStudentCT
 ```
 
-Jika perlu:
-
-```bash
-pveum role modify LabStudentCT \
--privs "Pool.Audit VM.Allocate VM.Audit VM.Console VM.PowerMgmt VM.Config.CPU VM.Config.Memory VM.Config.Network VM.Config.Disk VM.Config.Options"
-```
-
-Logout akun siswa dari GUI, lalu login kembali.
-
 ---
 
-# 13. Jika `vmbr0` Tidak Muncul
+# 42. Jika vmbr0 Tidak Muncul
 
-Cek bridge:
+Gejala:
 
-```bash
-ip -br link show vmbr0
+```text
+Create CT
+→ Network
+→ Bridge
 ```
 
-Cek permission:
+kosong.
+
+Cek:
 
 ```bash
 pveum user permissions siswa01@pve | grep -i sdn
 ```
 
-Seharusnya ada:
+Harus terdapat:
 
 ```text
 /sdn/zones/localnetwork
@@ -531,11 +1406,11 @@ Seharusnya ada:
     SDN.Use
 ```
 
-Jika permission baru saja diubah, logout siswa lalu login kembali.
+Kemudian logout siswa dan login kembali.
 
 ---
 
-# 14. Jika Muncul Error 403 Saat Finish
+# 43. Jika Muncul Permission Check Failed (403)
 
 Pesan:
 
@@ -543,115 +1418,168 @@ Pesan:
 Permission check failed (403)
 ```
 
-Periksa terlebih dahulu:
+Periksa tiga hal utama.
+
+## A. Resource Pool
+
+Harus ada:
+
+```text
+Resource Pool:
+pool-siswa01
+```
+
+## B. Storage
+
+Harus ada permission:
+
+```text
+Datastore.AllocateSpace
+```
+
+pada:
+
+```text
+/storage/local-lvm
+```
+
+## C. Bridge
+
+Harus ada:
+
+```text
+SDN.Use
+```
+
+pada:
+
+```text
+/sdn/zones/localnetwork/vmbr0
+```
+
+Cek semuanya:
 
 ```bash
 pveum user permissions siswa01@pve
 ```
 
-Pastikan:
+---
 
-```text
-/pool/pool-siswa01
-    Pool.Audit
-    VM.Allocate
-```
+# 44. Setelah Mengubah Permission, Login Ulang
 
-dan:
+Jika administrator baru saja mengubah role atau ACL:
 
-```text
-/storage/local-lvm
-    Datastore.AllocateSpace
-```
+1. logout akun siswa;
+2. login kembali;
+3. buka lagi `Create CT`.
 
-serta:
+Jangan hanya menutup wizard.
 
-```text
-/sdn/zones/localnetwork/vmbr0
-    SDN.Use
-```
-
-Pastikan pada tab **General** siswa memilih:
-
-```text
-Resource Pool : pool-siswa01
-```
-
-Jika resource pool kosong, pembuatan CT dapat gagal karena siswa tidak memiliki hak `VM.Allocate` global pada seluruh `/vms`.
+Session GUI bisa menyimpan informasi permission lama.
 
 ---
 
-# 15. Menjalankan Ulang Setup
+# 45. Menjalankan Setup Ulang
 
-`setup-siswa-proxmox.sh` dapat dijalankan ulang.
+Script setup dapat dijalankan ulang:
 
-Jika user dan pool sudah ada:
+```bash
+/root/setup-siswa-proxmox.sh
+```
 
-- user tidak dibuat ulang;
-- password user lama tidak diubah;
-- pool tidak dibuat ulang;
-- role akan diperbarui;
-- ACL akan diterapkan kembali.
+Jika user sudah ada:
 
-Ini berguna jika konfigurasi role atau permission perlu diperbaiki.
+```text
+tidak dibuat ulang
+```
+
+Jika pool sudah ada:
+
+```text
+tidak dibuat ulang
+```
+
+Role dan ACL akan diperbarui.
+
+Ini berguna ketika melakukan perbaikan konfigurasi.
 
 ---
 
-# 16. Menghapus Lab Siswa
+# 46. Sebelum Menghapus Lab
 
-Gunakan:
+Pastikan tidak ada data siswa yang masih dibutuhkan.
 
-```text
-/root/hapus-siswa-proxmox.sh
-```
-
-Script cleanup dibuat agar hanya menargetkan:
+Cleanup dapat menghapus:
 
 ```text
-siswa01@pve ... siswa30@pve
-pool-siswa01 ... pool-siswa30
+container
+root filesystem
+data di dalam container
 ```
 
-serta container LXC yang menjadi anggota pool tersebut.
+secara permanen.
+
+Jika ada data penting, backup terlebih dahulu.
 
 ---
 
-# 17. DRY-RUN Sebelum Menghapus
+# 47. Mode DRY-RUN pada Script Hapus
 
-Sangat disarankan menjalankan:
+Jangan langsung menggunakan opsi `--execute`.
+
+Jalankan dahulu:
 
 ```bash
 /root/hapus-siswa-proxmox.sh
 ```
 
-Mode default adalah:
+Script berada dalam mode:
 
 ```text
 DRY-RUN
 ```
 
-Artinya belum ada data yang dihapus.
+Artinya:
 
-Script hanya menunjukkan:
+```text
+tidak ada data yang benar-benar dihapus
+```
 
-- user yang akan dihapus;
-- pool yang akan dihapus;
-- CT yang akan dihentikan dan dihapus;
-- file password yang akan dibersihkan.
-
-Periksa output dengan teliti.
+Script hanya menunjukkan apa yang akan dihapus.
 
 ---
 
-# 18. Menghapus Container, Pool, dan User
+# 48. Contoh Output DRY-RUN
 
-Jika hasil dry-run sudah benar:
+Contoh:
+
+```text
+SISWA : siswa01@pve
+POOL  : pool-siswa01
+
+Container LXC ditemukan:
+    CT 108 - debian-siswa01
+
+[DRY-RUN] Akan menghapus CT 108
+[DRY-RUN] Akan menghapus pool pool-siswa01
+[DRY-RUN] Akan menghapus user siswa01@pve
+```
+
+Periksa hasilnya dengan teliti.
+
+---
+
+# 49. Menghapus Lab Siswa
+
+Jika dry-run sudah benar:
 
 ```bash
 /root/hapus-siswa-proxmox.sh --execute
 ```
 
-Script meminta konfirmasi:
+Akan muncul peringatan.
+
+Script meminta:
 
 ```text
 Ketik HAPUS untuk melanjutkan:
@@ -663,33 +1591,39 @@ Ketik:
 HAPUS
 ```
 
-Urutannya:
+---
+
+# 50. Urutan Penghapusan
+
+Script bekerja dengan urutan:
 
 ```text
-CT siswa
-   ↓
+container siswa
+    ↓
 stop
-   ↓
+    ↓
 destroy --purge
-   ↓
-cek pool kosong
-   ↓
+    ↓
+cek pool
+    ↓
+jika kosong
+    ↓
 hapus pool
-   ↓
+    ↓
 hapus user
 ```
 
 ---
 
-# 19. Menghapus Custom Role Sekaligus
+# 51. Menghapus Custom Role Sekaligus
 
-Jika ingin menghapus seluruh konfigurasi custom role Lab:
+Jika seluruh konfigurasi lab ingin dibersihkan:
 
 ```bash
 /root/hapus-siswa-proxmox.sh --execute --delete-roles
 ```
 
-Role yang akan dicoba dihapus:
+Role berikut akan dicoba dihapus:
 
 ```text
 LabStudentCT
@@ -700,15 +1634,13 @@ LabNetworkAudit
 LabNetworkUse
 ```
 
-Gunakan opsi ini hanya jika role tersebut tidak dipakai konfigurasi lain.
+Gunakan opsi ini hanya jika role tersebut memang tidak dipakai untuk kelas atau konfigurasi lain.
 
 ---
 
-# 20. Pengaman pada Script Cleanup
+# 52. Pengaman pada Script Cleanup
 
-Script cleanup sengaja dibuat konservatif.
-
-Misalnya:
+Misalnya secara tidak sengaja:
 
 ```text
 pool-siswa01
@@ -716,25 +1648,31 @@ pool-siswa01
 └── VM 900
 ```
 
-Script hanya menargetkan LXC.
+Script hanya menghapus LXC target.
 
-Setelah CT 108 dihapus, script menemukan VM 900 masih berada dalam pool.
-
-Pada kondisi ini:
+Setelah itu script melihat:
 
 ```text
-pool-siswa01 TIDAK dihapus
-siswa01@pve TIDAK dihapus
-VM 900 TIDAK dihapus
+VM 900
 ```
 
-Administrator harus memeriksa resource tersebut secara manual.
+masih ada.
+
+Maka:
+
+```text
+pool-siswa01 tidak dihapus
+siswa01@pve tidak dihapus
+VM 900 tidak dihapus
+```
+
+Ini dibuat agar resource lain tidak terhapus tanpa sengaja.
 
 ---
 
-# 21. Yang Tidak Dihapus
+# 53. Resource yang Tidak Dihapus oleh Cleanup
 
-Script cleanup tidak menghapus:
+Script tidak menghapus:
 
 ```text
 vmbr0
@@ -743,138 +1681,99 @@ local-lvm
 template LXC
 root@pam
 user administrator lain
-VM/QEMU di luar target
+VM QEMU di luar target
 ```
-
-Storage dan bridge adalah bagian dari infrastruktur Proxmox dan tetap dipertahankan.
 
 ---
 
-# 22. Melihat Daftar User
+# 54. Mengecek Apakah User Sudah Terhapus
+
+Jalankan:
 
 ```bash
 pveum user list
 ```
 
-Filter siswa:
+Filter:
 
 ```bash
 pveum user list | grep siswa
 ```
 
+Jika tidak ada hasil, berarti user siswa sudah bersih.
+
 ---
 
-# 23. Melihat Resource Pool
+# 55. Mengecek Pool
+
+Jalankan:
 
 ```bash
 pveum pool list
 ```
 
-Contoh:
+Filter:
 
-```text
-pool-siswa01
-pool-siswa02
-pool-siswa03
+```bash
+pveum pool list | grep pool-siswa
 ```
 
 ---
 
-# 24. Melihat Container
+# 56. Mengecek Container
+
+Jalankan:
 
 ```bash
 pct list
 ```
 
-Cek salah satu container:
-
-```bash
-pct status 108
-```
+Pastikan CT siswa sudah tidak ada.
 
 ---
 
-# 25. Struktur Akhir Lab
+# 57. Workflow untuk Guru/Administrator
 
-```text
-Proxmox VE 9.x
-│
-├── Administrator
-│   └── root@pam
-│
-├── siswa01@pve
-│   └── pool-siswa01
-│       ├── CT 101
-│       └── CT 102
-│
-├── siswa02@pve
-│   └── pool-siswa02
-│       └── CT 103
-│
-└── siswa30@pve
-    └── pool-siswa30
-```
+## Sebelum praktikum
 
-Resource bersama:
-
-```text
-Template : local
-Disk     : local-lvm
-Bridge   : vmbr0
-```
-
----
-
-# 26. Batasan Konfigurasi Saat Ini
-
-Konfigurasi ACL ini membatasi **akses antar siswa**, tetapi belum membatasi kuota seperti:
-
-- maksimal jumlah CT per siswa;
-- maksimal CPU;
-- maksimal RAM;
-- maksimal disk;
-- batas bandwidth;
-- batas VLAN tertentu.
-
-Artinya siswa masih dapat mencoba meminta resource yang cukup besar selama host mengizinkannya.
-
-Untuk lingkungan kelas produksi, sebaiknya administrator menentukan kebijakan resource tambahan.
-
----
-
-# 27. Workflow Praktikum yang Disarankan
-
-Sebelum praktikum:
+Jalankan:
 
 ```bash
 /root/setup-siswa-proxmox.sh
 ```
 
-Guru membagikan akun dari:
+Kemudian lihat akun:
 
 ```bash
 cat /root/password-siswa-proxmox.csv
 ```
 
-Siswa:
+Bagikan satu akun kepada satu siswa.
+
+---
+
+## Saat praktikum
+
+Siswa login.
+
+Kemudian:
 
 ```text
-Login
-  ↓
 Create CT
-  ↓
-pilih pool sendiri
-  ↓
-pilih template
-  ↓
-pilih local-lvm
-  ↓
-pilih vmbr0
-  ↓
-Finish
+→ pilih pool sendiri
+→ pilih template
+→ local-lvm
+→ CPU
+→ Memory
+→ vmbr0
+→ Finish
 ```
 
-Setelah praktikum selesai:
+---
+
+## Setelah praktikum
+
+Pertama:
 
 ```bash
 /root/hapus-siswa-proxmox.sh
@@ -882,69 +1781,200 @@ Setelah praktikum selesai:
 
 Periksa dry-run.
 
-Kemudian:
+Jika benar:
 
 ```bash
 /root/hapus-siswa-proxmox.sh --execute
 ```
 
-Jika seluruh custom role juga ingin dibersihkan:
+---
 
-```bash
-/root/hapus-siswa-proxmox.sh --execute --delete-roles
+# 58. Saran Resource untuk Praktikum Dasar
+
+Untuk server yang dipakai banyak siswa, jangan memberikan resource terlalu besar.
+
+Contoh awal:
+
+```text
+CPU    : 1 core
+RAM    : 512 MB – 1 GB
+Disk   : 8 GB
+Swap   : 512 MB
 ```
 
----
-
-# 28. Catatan Keamanan
-
-- Jangan memberikan role `Administrator` kepada siswa.
-- Jangan memberikan `Sys.Modify` kepada siswa.
-- Jangan memberikan `VM.Allocate` global pada `/vms`.
-- Hak `VM.Allocate` sebaiknya hanya diberikan pada pool masing-masing.
-- Jangan memberikan hak upload template jika siswa hanya perlu memakai template yang disediakan.
-- Gunakan unprivileged container untuk praktik siswa.
-- Jalankan dry-run sebelum melakukan cleanup.
-- Lakukan backup jika container menyimpan data penting.
+Sesuaikan dengan kapasitas server dan jumlah siswa.
 
 ---
 
-## Ringkasan Perintah
+# 59. Hal yang Belum Dibatasi oleh Script
 
-Setup:
+Script saat ini mengatur **hak akses**, bukan kuota.
+
+Belum ada pembatasan otomatis seperti:
+
+```text
+maksimal 1 CT per siswa
+maksimal 2 CPU
+maksimal RAM 2 GB
+maksimal disk 10 GB
+```
+
+Jadi guru tetap perlu memberikan aturan praktikum.
+
+---
+
+# 60. Saran Keamanan
+
+Untuk lab siswa:
+
+- jangan berikan role Administrator;
+- jangan memberikan `Sys.Modify`;
+- jangan memberikan `VM.Allocate` global pada `/vms`;
+- gunakan unprivileged container;
+- template dikelola administrator;
+- siswa hanya menggunakan pool masing-masing;
+- siswa hanya menggunakan bridge yang ditentukan;
+- lakukan cleanup setelah praktik jika container tidak lagi diperlukan;
+- lakukan dry-run sebelum cleanup.
+
+---
+
+# 61. Perintah Cepat
+
+## Setup
 
 ```bash
 chmod +x /root/setup-siswa-proxmox.sh
 /root/setup-siswa-proxmox.sh
 ```
 
-Lihat password:
+## Lihat password
 
 ```bash
 cat /root/password-siswa-proxmox.csv
 ```
 
-Cek permission:
+## Cek permission siswa
 
 ```bash
 pveum user permissions siswa01@pve
 ```
 
-Dry-run cleanup:
+## Lihat container
 
 ```bash
-chmod +x /root/hapus-siswa-proxmox.sh
+pct list
+```
+
+## Dry-run cleanup
+
+```bash
 /root/hapus-siswa-proxmox.sh
 ```
 
-Cleanup:
+## Cleanup
 
 ```bash
 /root/hapus-siswa-proxmox.sh --execute
 ```
 
-Cleanup beserta custom role:
+## Cleanup + hapus custom role
 
 ```bash
 /root/hapus-siswa-proxmox.sh --execute --delete-roles
 ```
+
+---
+
+# 62. Checklist Sebelum Praktikum
+
+- [ ] Proxmox VE dapat dibuka dari browser.
+- [ ] Login `root@pam` berhasil.
+- [ ] Node `pve1` terlihat.
+- [ ] Storage `local` aktif.
+- [ ] Storage `local-lvm` aktif.
+- [ ] Bridge `vmbr0` tersedia.
+- [ ] Template LXC sudah tersedia.
+- [ ] `setup-siswa-proxmox.sh` sudah dibuat.
+- [ ] `hapus-siswa-proxmox.sh` sudah dibuat.
+- [ ] Kedua script sudah executable.
+- [ ] Script setup berhasil dijalankan.
+- [ ] File password siswa sudah dibuat.
+- [ ] Login `siswa01@pve` sudah diuji.
+- [ ] `pool-siswa01` muncul.
+- [ ] `vmbr0` muncul.
+- [ ] Test Create CT berhasil.
+- [ ] Siswa01 tidak dapat mengakses CT siswa lain.
+
+---
+
+# 63. Checklist Setelah Praktikum
+
+- [ ] Data penting siswa sudah disimpan jika diperlukan.
+- [ ] Dry-run cleanup sudah diperiksa.
+- [ ] Tidak ada VM administrator yang masuk pool siswa.
+- [ ] Cleanup dijalankan.
+- [ ] User siswa sudah terhapus.
+- [ ] Pool siswa sudah terhapus.
+- [ ] CT siswa sudah terhapus.
+- [ ] `vmbr0`, `local`, dan `local-lvm` tetap tersedia.
+- [ ] Custom role dihapus hanya jika memang tidak akan digunakan lagi.
+
+---
+
+# 64. Ringkasan Paling Sederhana
+
+Untuk pengguna yang benar-benar baru, urutan minimalnya adalah:
+
+```text
+1. Login ke Proxmox sebagai root@pam
+
+2. Buka:
+   pve1 → Shell
+
+3. Pastikan template sudah ada
+
+4. Jalankan:
+   /root/setup-siswa-proxmox.sh
+
+5. Lihat password:
+   cat /root/password-siswa-proxmox.csv
+
+6. Login sebagai siswa01
+
+7. Klik:
+   Create CT
+
+8. Pilih:
+   pool-siswa01
+   local
+   local-lvm
+   vmbr0
+
+9. Finish
+
+10. Setelah praktik, sebagai root jalankan:
+    /root/hapus-siswa-proxmox.sh
+
+11. Jika dry-run benar:
+    /root/hapus-siswa-proxmox.sh --execute
+```
+
+---
+
+## Catatan Akhir
+
+Konfigurasi ini ditujukan untuk **lab pembelajaran**, di mana administrator/guru tetap mengendalikan:
+
+```text
+node
+storage
+template
+network
+ACL
+role
+```
+
+sementara siswa hanya mengelola container miliknya sendiri.
+
+Untuk penggunaan produksi, sebaiknya tambahkan kebijakan backup, firewall, kuota resource, monitoring, dan pengamanan jaringan sesuai kebutuhan organisasi.
