@@ -4,7 +4,7 @@ set -u
 set -o pipefail
 
 # ============================================================
-# CLEANUP LAB SISWA - PROXMOX VE 9.x
+# CLEANUP LAB SISWA - PROXMOX VE 9.x - ChatGPT
 #
 # Pasangan dari:
 #
